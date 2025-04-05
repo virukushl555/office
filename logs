@@ -1,0 +1,71 @@
+import boto3
+import time
+from datetime import datetime
+
+logs = boto3.client('logs')
+sns = boto3.client('sns')
+
+LOG_GROUP = '/aws/ecs/your-log-group'  # Replace with your actual log group
+SNS_TOPIC_ARN = 'arn:aws:sns:us-east-1:123456789012:YourSNSTopic'  # Replace with your SNS ARN
+
+THRESHOLD = 1_000_000
+TOP_N = 5
+
+def lambda_handler(event, context):
+    now = datetime.utcnow()
+    start_of_day = datetime(now.year, now.month, now.day)
+    start_time = int(start_of_day.timestamp())
+    end_time = int(now.timestamp())
+
+    # Build CloudWatch Logs Insights query
+    query = f"""
+    fields @logStream
+    | filter @timestamp >= {start_time * 1000}
+    | stats count() as log_count by @logStream
+    | sort log_count desc
+    | limit {TOP_N}
+    """
+
+    # Start query
+    response = logs.start_query(
+        logGroupName=LOG_GROUP,
+        startTime=start_time,
+        endTime=end_time,
+        queryString=query,
+    )
+
+    query_id = response['queryId']
+    print(f"Started query with ID: {query_id}")
+
+    # Wait for query to complete (with timeout)
+    timeout = time.time() + 60  # 60 seconds
+    while True:
+        result = logs.get_query_results(queryId=query_id)
+        if result['status'] == 'Complete':
+            break
+        if time.time() > timeout:
+            print("Query timed out.")
+            return
+        time.sleep(2)
+
+    # Process results
+    alert_sent = False
+    for row in result['results']:
+        log_stream = next(item['value'] for item in row if item['field'] == '@logStream')
+        count = int(next(item['value'] for item in row if item['field'] == 'log_count'))
+
+        print(f"Log stream: {log_stream}, Count: {count}")
+
+        if count >= THRESHOLD:
+            message = f"[ALERT] Log stream '{log_stream}' has {count} log events today (UTC)."
+            print(message)
+            sns.publish(
+                TopicArn=SNS_TOPIC_ARN,
+                Subject="High Log Volume Alert",
+                Message=message
+            )
+            alert_sent = True
+
+    if not alert_sent:
+        print("No log streams exceeded the threshold.")
+
