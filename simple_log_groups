@@ -53,3 +53,18 @@ def lambda_handler(event=None, context=None):
         count = int(next(item['value'] for item in row if item['field'] == 'log_count'))
         print(f"{log_stream}: {count:,} log events")
 
+
+
+
+
+
+-------------------------
+
+
+def list_all_log_groups():
+    paginator = logs.get_paginator('describe_log_groups')
+    for page in paginator.paginate():
+        for group in page['logGroups']:
+            log_group_name = group['logGroupName']
+            if not log_group_name.startswith('/aws/lambda/'):
+                yield log_group_name
