@@ -1,0 +1,50 @@
+import boto3
+import time
+from datetime import datetime
+
+logs = boto3.client('logs')
+
+def list_all_log_groups():
+    paginator = logs.get_paginator('describe_log_groups')
+    for page in paginator.paginate():
+        for group in page['logGroups']:
+            yield group['logGroupName']
+
+def lambda_handler(event, context):
+    now = datetime.utcnow()
+    start_of_day = datetime(now.year, now.month, now.day)
+    start_ts = int(start_of_day.timestamp())
+    end_ts = int(now.timestamp())
+
+    query = f"""
+    fields @logStream
+    | stats count() as log_count by @logStream
+    | sort log_count desc
+    """
+
+    for log_group in list_all_log_groups():
+        print(f"Running query for log group: {log_group}")
+
+        try:
+            res = logs.start_query(
+                logGroupName=log_group,
+                startTime=start_ts,
+                endTime=end_ts,
+                queryString=query,
+            )
+            query_id = res['queryId']
+
+            while True:
+                result = logs.get_query_results(queryId=query_id)
+                if result['status'] == 'Complete':
+                    break
+                time.sleep(2)
+
+            print(f"Results for {log_group}:")
+            for row in result['results']:
+                log_stream = next(i['value'] for i in row if i['field'] == '@logStream')
+                count = int(next(i['value'] for i in row if i['field'] == 'log_count'))
+                print(f"  {log_stream}: {count}")
+
+        except Exception as e:
+            print(f"Error querying {log_group}: {e}")
